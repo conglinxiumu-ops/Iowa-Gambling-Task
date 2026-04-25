@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     爱荷华赌博任务 (Iowa Gambling Task, IGT) 实验程序
+     
+     【程序总览】
+     这是一个经典心理学实验，用于研究决策行为。参与者需要
+     在 4 副牌 (A、B、C、D) 中反复选择，每次选牌会获得盈利，
+     也可能伴随损失。其中 A、B 为盈利牌，C、D 为损失牌，
+     但参与者事先并不知道规则，需要在博弈中自己摸索。
+     
+     【核心架构】
+     - 单 HTML 文件，无外部依赖（只引用 Google 字体）
+     - 4 个"场景 (stage)"：欢迎页 / 任务页 / 中场页 / 结果页
+     - 通过切换 CSS class 来显示/隐藏场景
+     - 所有数据保存在一个 JS 对象 state 中
+     ============================================================ -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE IOWA TABLE · 爱荷华赌博任务</title>
+
+<!-- ===== 引入 Google 字体 ===== 
+     Cinzel：优雅的罗马衬线字体，用于标题和标签（营造奢华感）
+     Cormorant Garamond：古典衬线字体，用于正文（复古报刊感）
+     DM Mono：等宽字体，用于数字/代码（清晰易读）
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     CSS 变量 (:root)：集中定义主题色
+     后续所有颜色都通过 var(--xxx) 引用，方便统一调整主题
+     ============================================================ */
+  :root {
+    --felt-deep:   #0a2e22;  /* 最深的绒布绿（桌面边缘） */
+    --felt:        #0f4432;  /* 标准绒布绿（桌面中心） */
+    --felt-light:  #156147;  /* 较亮的绒布绿（高光区域） */
+    --gold:        #d4a84b;  /* 标准古金色（边框、标签） */
+    --gold-bright: #f2cc67;  /* 明亮金色（高光、数字） */
+    --gold-soft:   #b8902f;  /* 暗金色（阴影、渐变用） */
+    --wine:        #5c1a1b;  /* 酒红色（面板背景） */
+    --wine-deep:   #2a0a0b;  /* 深酒红（面板阴影） */
+    --cream:       #f4e8c8;  /* 米色（主要文字） */
+    --ivory:       #ede2c4;  /* 象牙色（次要文字） */
+    --blood:       #c73132;  /* 血红色（损失/警告） */
+    --emerald:     #36c88a;  /* 翠绿色（盈利） */
+    /* 通用阴影：给面板增加浮起感 */
+    --shadow-deep: 0 30px 80px rgba(0,0,0,.6), 0 10px 30px rgba(0,0,0,.5);
+  }
+
+  /* 通用重置：去掉所有默认边距和内边距 */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    min-height: 100vh;                              /* 至少占满整个视口 */
+    font-family: 'Cormorant Garamond', 'Georgia', serif;
+    color: var(--cream);
+    overflow-x: hidden;                             /* 禁止横向滚动 */
+  }
+
+  /* ============================================================
+     赌桌背景：用 3 层叠加营造真实的绒布效果
+     ============================================================ */
+  body {
+    /* 径向渐变：中心亮、边缘暗，模拟绒布受光面 */
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 50%,
+        var(--felt-light) 0%,
+        var(--felt) 35%,
+        var(--felt-deep) 75%,
+        #050f0b 100%);
+    position: relative;
+  }
+  
+  /* 第一层叠加：斜向细纹（模拟织物编织感） */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;       /* 固定在整个视口 */
+    background-image:
+      repeating-linear-gradient(45deg,
+        rgba(212,168,75,.015) 0 2px,
+        transparent 2px 4px),
+      radial-gradient(circle at 20% 20%, rgba(244,232,200,.04), transparent 50%),
+      radial-gradient(circle at 80% 80%, rgba(244,232,200,.03), transparent 50%);
+    pointer-events: none;            /* 不拦截鼠标事件 */
+    z-index: 0;
+  }
+  
+  /* 第二层叠加：SVG 噪声纹理（让背景更有"质感"，不显得平滑单调）
+     这是一个内联 SVG，用滤镜生成分形噪声，base64 节省请求 */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    pointer-events: none;
+    z-index: 1;
+    mix-blend-mode: overlay;         /* 叠加模式：让噪声和底色融合 */
+    opacity: .5;
+  }
+
+  /* ============================================================
+     场景 (Stage) 容器
+     每个"页面"都是一个 .stage，默认 display:none
+     加上 .active 后才显示，用于场景切换
+     ============================================================ */
+  .stage {
+    position: relative;
+    z-index: 2;                       /* 高于背景层 */
+    min-height: 100vh;
+    padding: 40px 24px 60px;
+    display: none;                    /* 默认隐藏 */
+    flex-direction: column;
+    align-items: center;
+  }
+  .stage.active { display: flex; }    /* 激活时显示 */
+
+  /* ============================================================
+     装饰元素：左右横线 + 居中大写文字（经典 Art Deco 样式）
+     ============================================================ */
+  .ornament {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    color: var(--gold);
+    font-size: 14px;
+    letter-spacing: .5em;             /* 字母间距很大，营造高级感 */
+    text-transform: uppercase;
+    font-family: 'Cinzel', serif;
+    font-weight: 500;
+  }
+  /* ::before 和 ::after 生成左右两条渐变横线 */
+  .ornament::before, .ornament::after {
+    content: '';
+    width: 60px;
+    height: 1px;
+    /* 线条两端透明，中间金色：若隐若现的效果 */
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  }
+
+  /* 主标题：霓虹金色大字 */
+  h1.title {
+    font-family: 'Cinzel', serif;
+    font-weight: 900;
+    /* clamp: 响应式字号，最小 44px，最大 92px，中间按 7vw 缩放 */
+    font-size: clamp(44px, 7vw, 92px);
+    line-height: .95;
+    color: var(--gold-bright);
+    text-align: center;
+    letter-spacing: .02em;
+    margin: 18px 0 8px;
+    /* 多层阴影：近距离辉光 + 中距离辉光 + 下方浮雕效果 */
+    text-shadow:
+      0 0 20px rgba(242,204,103,.4),
+      0 0 40px rgba(242,204,103,.25),
+      0 4px 0 rgba(0,0,0,.5);
+  }
+
+  .subtitle {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 20px;
+    color: var(--ivory);
+    opacity: .8;
+    text-align: center;
+    letter-spacing: .1em;
+  }
+
+  /* ============================================================
+     主按钮：金色凸起按钮（模仿金属铭牌）
+     ============================================================ */
+  .btn {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    padding: 18px 44px;
+    /* 纵向三色渐变：模仿金属的受光/过渡/阴影 */
+    background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 50%, var(--gold-soft) 100%);
+    color: var(--felt-deep);
+    border: 2px solid var(--gold-bright);
+    border-radius: 2px;               /* 轻微圆角，保持锐利感 */
+    cursor: pointer;
+    position: relative;
+    /* 多层阴影：内阴影 + 金色辉光 + 下方投影 */
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,.3) inset,
+      0 0 20px rgba(242,204,103,.35),
+      0 6px 20px rgba(0,0,0,.5);
+    transition: all .25s ease;        /* 让所有属性变化都平滑过渡 */
+  }
+  .btn:hover {
+    transform: translateY(-2px);      /* 悬停时轻微上浮 */
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,.3) inset,
+      0 0 35px rgba(242,204,103,.6),  /* 辉光增强 */
+      0 10px 25px rgba(0,0,0,.6);
+  }
+  .btn:active { transform: translateY(0); }  /* 点击时回到原位 */
+
+  /* 次要按钮：透明背景 + 金色边框 */
+  .btn.secondary {
+    background: transparent;
+    color: var(--gold-bright);
+    border: 1px solid var(--gold);
+    box-shadow: none;
+  }
+  .btn.secondary:hover {
+    background: rgba(212,168,75,.1);
+    box-shadow: 0 0 15px rgba(212,168,75,.3);
+  }
+
+  /* ============================================================
+     场景 1：欢迎页
+     ============================================================ */
+  #welcome {
+    justify-content: center;          /* 垂直居中 */
+  }
+  
+  /* 欢迎页的金色双边框框：包含标题和说明 */
+  .welcome-frame {
+    max-width: 880px;
+    width: 100%;
+    padding: 60px 50px;
+    /* 双重背景：酒红渐变 + 金色径向光 */
+    background:
+      linear-gradient(135deg, rgba(92,26,27,.6), rgba(42,10,11,.8)),
+      radial-gradient(ellipse at top, rgba(212,168,75,.1), transparent 70%);
+    border: 1px solid var(--gold);
+    border-radius: 4px;
+    position: relative;
+    box-shadow: var(--shadow-deep);
+  }
+  /* 内部第二层边框：用 ::before 实现双边框效果 */
+  .welcome-frame::before {
+    content: '';
+    position: absolute;
+    inset: 8px;                       /* 距外边框 8px */
+    border: 1px solid rgba(212,168,75,.35);
+    pointer-events: none;
+  }
+  /* 顶部的扑克符号徽章：黑红方梅 */
+  .welcome-frame::after {
+    content: '♠ ♥ ♦ ♣';
+    position: absolute;
+    top: -16px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--felt-deep);
+    padding: 4px 24px;
+    color: var(--gold);
+    letter-spacing: .5em;
+    font-size: 14px;
+    border: 1px solid var(--gold);
+  }
+  
+  .instructions {
+    font-size: 17px;
+    line-height: 1.8;
+    color: var(--ivory);
+    margin: 36px 0;
+    text-align: left;
+  }
+  .instructions p { margin-bottom: 14px; }
+  .instructions strong { color: var(--gold-bright); font-weight: 600; }
+
+  /* 被试编号输入区 */
+  .id-input {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 30px 0 24px;
+    justify-content: center;
+  }
+  .id-input label {
+    font-family: 'Cinzel', serif;
+    font-size: 13px;
+    letter-spacing: .3em;
+    color: var(--gold);
+    text-transform: uppercase;
+  }
+  .id-input input {
+    background: rgba(0,0,0,.5);       /* 半透明黑底，透出绒布纹理 */
+    border: 1px solid var(--gold);
+    color: var(--cream);
+    padding: 12px 18px;
+    font-family: 'DM Mono', monospace;
+    font-size: 16px;
+    letter-spacing: .15em;
+    border-radius: 2px;
+    width: 220px;
+    text-align: center;
+    outline: none;                    /* 去掉浏览器默认的聚焦框 */
+  }
+  .id-input input:focus {
+    box-shadow: 0 0 20px rgba(212,168,75,.4);  /* 聚焦时金色辉光 */
+  }
+
+  .cta-row {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 20px;
+  }
+
+  /* ============================================================
+     场景 2：任务页 (核心实验界面)
+     ============================================================ */
+  #task { justify-content: flex-start; }
+
+  /* ----- HUD (Heads-Up Display)：顶部信息栏 -----
+     三栏布局：左=试次信息 / 中=余额 / 右=上轮结果 */
+  .hud {
+    width: 100%;
+    max-width: 1200px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;  /* 两侧等宽，中间按内容 */
+    align-items: center;
+    gap: 40px;
+    padding: 22px 40px;
+    margin-bottom: 30px;
+    background: linear-gradient(180deg, rgba(42,10,11,.85), rgba(20,5,5,.9));
+    border: 1px solid var(--gold);
+    border-radius: 3px;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,.4) inset,
+      0 8px 30px rgba(0,0,0,.5);
+    position: relative;
+  }
+  /* HUD 左右两端的金色装饰圆点（模仿金属铆钉） */
+  .hud::before, .hud::after {
+    content: '';
+    position: absolute;
+    top: 50%; transform: translateY(-50%);
+    width: 30px; height: 30px;
+    background:
+      radial-gradient(circle, var(--gold) 20%, transparent 22%),
+      radial-gradient(circle, var(--wine-deep) 30%, transparent 32%);
+    background-size: 100% 100%;
+  }
+  .hud::before { left: 10px; }
+  .hud::after  { right: 10px; }
+
+  .hud-block {
+    display: flex;
+    flex-direction: column;
+  }
+  .hud-block.left  { align-items: flex-start; padding-left: 30px; }
+  .hud-block.right { align-items: flex-end;  padding-right: 30px; }
+  
+  .hud-label {
+    font-family: 'Cinzel', serif;
+    font-size: 11px;
+    letter-spacing: .4em;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .hud-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 22px;
+    color: var(--cream);
+    letter-spacing: .05em;
+  }
+
+  /* 余额霓虹数字：整个界面的视觉焦点 */
+  .balance-neon {
+    font-family: 'Cinzel', serif;
+    font-weight: 900;
+    font-size: 54px;
+    color: var(--gold-bright);
+    /* 三层辉光：近-中-远，制造霓虹灯管效果 */
+    text-shadow:
+      0 0 10px rgba(242,204,103,.9),
+      0 0 25px rgba(242,204,103,.6),
+      0 0 45px rgba(242,204,103,.3);
+    letter-spacing: .02em;
+    line-height: 1;
+    text-align: center;
+  }
+  /* 盈利时闪金光 */
+  .balance-neon.flash { animation: flashGold .6s ease; }
+  /* 损失时闪红光 */
+  .balance-neon.flash-loss { animation: flashRed .6s ease; }
+  
+  @keyframes flashGold {
+    0%, 100% { color: var(--gold-bright); }
+    50% { color: #fff; text-shadow: 0 0 25px #fff, 0 0 60px var(--gold-bright); }
+  }
+  @keyframes flashRed {
+    0%, 100% { color: var(--gold-bright); }
+    50% { color: var(--blood); text-shadow: 0 0 25px var(--blood), 0 0 60px var(--blood); }
+  }
+
+  /* 进度条：贯穿全屏的金色绶带 */
+  .progress-belt {
+    width: 100%;
+    max-width: 1200px;
+    height: 6px;
+    background: rgba(0,0,0,.5);
+    border: 1px solid rgba(212,168,75,.3);
+    border-radius: 0;
+    margin-bottom: 50px;
+    position: relative;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--gold-soft), var(--gold-bright), var(--gold-soft));
+    width: 0%;
+    transition: width .4s ease;       /* 宽度变化时平滑过渡 */
+    box-shadow: 0 0 10px var(--gold-bright);
+  }
+
+  .table-heading {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 22px;
+    color: var(--ivory);
+    opacity: .85;
+    margin-bottom: 30px;
+    letter-spacing: .08em;
+  }
+
+  /* ============================================================
+     牌堆 (Deck) 部件
+     4 副牌横向排列，每副都是一个 .deck
+     ============================================================ */
+  .deck-row {
+    display: flex;
+    gap: 34px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    perspective: 1200px;              /* 3D 透视视角，让卡片有立体感 */
+    margin-bottom: 40px;
+  }
+
+  .deck-slot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+
+  /* 单个牌堆 */
+  .deck {
+    width: 180px;
+    height: 260px;
+    position: relative;
+    cursor: pointer;
+    transform-style: preserve-3d;     /* 保持 3D 空间 */
+    transition: transform .4s cubic-bezier(.23,1.12,.41,1);
+    /* cubic-bezier：自定义缓动曲线，制造"弹性"回弹感 */
+  }
+  .deck:hover:not(.disabled) {
+    transform: translateY(-12px) rotateX(6deg);  /* 悬停：上浮 + 轻微前倾 */
+  }
+  .deck.disabled { cursor: not-allowed; opacity: .5; }
+
+  /* 用 ::before 模拟"多张叠起来的卡片"阴影 */
+  .deck::before {
+    content: '';
+    position: absolute;
+    top: 6px; left: 6px; right: -6px; bottom: -6px;
+    background: linear-gradient(135deg, #1a0505, #0a0202);
+    border-radius: 10px;
+    /* 两层阶梯阴影：让卡片看起来像是一叠 */
+    box-shadow: 4px 4px 0 rgba(0,0,0,.4), 8px 8px 0 rgba(0,0,0,.3);
+  }
+
+  .card-face {
+    position: absolute;
+    inset: 0;
+    border-radius: 10px;
+    backface-visibility: hidden;      /* 翻转时隐藏背面 */
+    transform-style: preserve-3d;
+  }
+
+  /* 卡牌的背面：经典的红+金菱形格纹 */
+  .card-back {
+    background:
+      /* 两个方向的交叉斜线形成菱格 */
+      repeating-linear-gradient(45deg, rgba(212,168,75,.2) 0 2px, transparent 2px 7px),
+      repeating-linear-gradient(-45deg, rgba(212,168,75,.2) 0 2px, transparent 2px 7px),
+      /* 深红三色渐变底 */
+      linear-gradient(135deg, #8b1a1c 0%, #5c1010 50%, #3d0a0b 100%);
+    border: 3px solid var(--gold);
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,.6) inset,
+      0 0 20px rgba(212,168,75,.2),
+      0 8px 20px rgba(0,0,0,.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  /* 双层装饰边框 */
+  .card-back::before {
+    content: '';
+    position: absolute;
+    inset: 12px;
+    border: 1px solid var(--gold);
+    border-radius: 4px;
+  }
+  .card-back::after {
+    content: '';
+    position: absolute;
+    inset: 20px;
+    border: 1px solid rgba(212,168,75,.5);
+    border-radius: 2px;
+  }
+
+  /* 牌堆中央的大字母 A/B/C/D */
+  .deck-emblem {
+    font-family: 'Cinzel', serif;
+    font-size: 72px;
+    font-weight: 900;
+    color: var(--gold-bright);
+    text-shadow:
+      0 0 15px rgba(242,204,103,.8),
+      0 2px 0 rgba(0,0,0,.5);
+    position: relative;
+    z-index: 1;
+  }
+  /* 字母上下的菱形装饰 */
+  .deck-emblem::before {
+    content: '◆';
+    position: absolute;
+    top: -40px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 18px;
+    color: var(--gold);
+  }
+  .deck-emblem::after {
+    content: '◆';
+    position: absolute;
+    bottom: -40px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 18px;
+    color: var(--gold);
+  }
+
+  .deck-label {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--gold);
+    letter-spacing: .5em;
+    text-transform: uppercase;
+    padding-left: .5em;
+  }
+
+  /* ============================================================
+     翻牌揭晓遮罩 (Reveal Overlay)
+     点击牌堆后全屏覆盖，显示被抽到的牌
+     ============================================================ */
+  .reveal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.85);
+    backdrop-filter: blur(10px);      /* 背景模糊：增强焦点感 */
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .reveal-overlay.show {
+    display: flex;
+    animation: fadeIn .3s ease;
+  }
+  @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+
+  /* 被翻开的牌：米色羊皮纸质感 */
+  .revealed-card {
+    width: 280px;
+    height: 400px;
+    background: linear-gradient(135deg, #fdf6e3 0%, #f4e8c8 50%, #e8d9a8 100%);
+    border-radius: 14px;
+    border: 4px solid var(--gold);
+    box-shadow:
+      0 0 60px rgba(242,204,103,.6),
+      0 20px 60px rgba(0,0,0,.8);
+    display: flex;
+    flex-direction: column;
+    padding: 28px;
+    position: relative;
+    animation: cardPop .6s cubic-bezier(.34,1.56,.64,1);
+    color: var(--wine-deep);
+  }
+  /* 翻牌动画：从小到大 + 翻转 180 度 */
+  @keyframes cardPop {
+    0%   { transform: scale(.3) rotateY(180deg); opacity: 0; }
+    60%  { transform: scale(1.05) rotateY(0); opacity: 1; }  /* 轻微过冲 */
+    100% { transform: scale(1) rotateY(0); }
+  }
+
+  /* 扑克牌左上/右下的字母（真实扑克样式） */
+  .revealed-corner {
+    font-family: 'Cinzel', serif;
+    font-weight: 900;
+    font-size: 36px;
+    color: var(--wine);
+  }
+  .revealed-corner.bottom {
+    position: absolute;
+    bottom: 20px; right: 24px;
+    transform: rotate(180deg);        /* 右下角旋转 180 度 */
+  }
+  .revealed-corner.top {
+    position: absolute;
+    top: 20px; left: 24px;
+  }
+
+  .revealed-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    gap: 18px;
+  }
+
+  .revealed-win {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 26px;
+    color: #1b6d3e;                   /* 深绿色表示盈利 */
+    letter-spacing: .08em;
+  }
+  .revealed-win .amount {
+    font-size: 48px;
+    display: block;
+    margin-top: 4px;
+  }
+
+  .revealed-loss {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 22px;
+    color: var(--blood);              /* 红色表示损失 */
+    letter-spacing: .08em;
+    margin-top: 6px;
+  }
+  .revealed-loss .amount {
+    font-size: 40px;
+    display: block;
+    margin-top: 2px;
+  }
+
+  .revealed-net {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 18px;
+    color: var(--wine-deep);
+    opacity: .7;
+    margin-top: 8px;
+    letter-spacing: .1em;
+  }
+
+  /* "点击继续"的脉动提示 */
+  .revealed-continue {
+    margin-top: 30px;
+    text-align: center;
+    font-family: 'Cinzel', serif;
+    font-size: 11px;
+    letter-spacing: .4em;
+    color: rgba(92,26,27,.6);
+    text-transform: uppercase;
+    animation: pulse 1.5s ease-in-out infinite;  /* 无限循环 */
+  }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  /* ============================================================
+     场景 3：中场休息页
+     ============================================================ */
+  #break { justify-content: center; }
+  .break-frame {
+    text-align: center;
+    max-width: 700px;
+    padding: 60px 50px;
+    background: linear-gradient(135deg, rgba(92,26,27,.7), rgba(42,10,11,.85));
+    border: 1px solid var(--gold);
+    position: relative;
+  }
+  .break-frame::before {
+    content: '';
+    position: absolute;
+    inset: 8px;
+    border: 1px solid rgba(212,168,75,.35);
+  }
+  .break-stat {
+    font-family: 'DM Mono', monospace;
+    font-size: 42px;
+    color: var(--gold-bright);
+    margin: 20px 0;
+    text-shadow: 0 0 20px rgba(242,204,103,.5);
+  }
+
+  /* ============================================================
+     场景 4：结果页
+     ============================================================ */
+  #results { justify-content: flex-start; }
+
+  .results-header {
+    text-align: center;
+    margin-bottom: 50px;
+  }
+  
+  /* 最终余额展示卡（结果页的视觉主角） */
+  .final-balance-card {
+    margin: 30px auto 0;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 80px;
+    background:
+      radial-gradient(ellipse at center, rgba(212,168,75,.15), transparent 70%),
+      linear-gradient(180deg, rgba(42,10,11,.9), rgba(20,5,5,.95));
+    border: 2px solid var(--gold);
+    border-radius: 3px;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,.4) inset,
+      0 0 40px rgba(212,168,75,.25),
+      var(--shadow-deep);
+    position: relative;
+  }
+  /* 左右两端的星星装饰 */
+  .final-balance-card::before, .final-balance-card::after {
+    content: '★';
+    position: absolute;
+    top: 50%; transform: translateY(-50%);
+    color: var(--gold);
+    font-size: 18px;
+  }
+  .final-balance-card::before { left: 18px; }
+  .final-balance-card::after { right: 18px; }
+  
+  .final-balance-label {
+    font-family: 'Cinzel', serif;
+    font-size: 13px;
+    letter-spacing: .5em;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .final-balance-value {
+    font-family: 'Cinzel', serif;
+    font-weight: 900;
+    font-size: 80px;
+    color: var(--gold-bright);
+    text-shadow:
+      0 0 20px rgba(242,204,103,.8),
+      0 0 40px rgba(242,204,103,.4);
+    line-height: 1;
+  }
+
+  .result-section {
+    width: 100%;
+    max-width: 1100px;
+    margin-bottom: 40px;
+  }
+
+  /* 各结果区块的标题 */
+  .section-title {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 22px;
+    color: var(--gold-bright);
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    margin-bottom: 22px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--gold);
+    position: relative;
+  }
+  .section-title::before {
+    content: '❧';                      /* 花饰符号 */
+    margin-right: 12px;
+    color: var(--gold);
+  }
+
+  /* 结果表格样式 */
+  table {
+    width: 100%;
+    border-collapse: collapse;        /* 消除单元格间距 */
+    background: linear-gradient(180deg, rgba(42,10,11,.7), rgba(20,5,5,.8));
+    border: 1px solid var(--gold);
+    font-family: 'DM Mono', monospace;
+  }
+  th {
+    background: linear-gradient(180deg, var(--wine), var(--wine-deep));
+    color: var(--gold-bright);
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    padding: 16px 12px;
+    border-bottom: 2px solid var(--gold);
+  }
+  td {
+    padding: 12px;
+    color: var(--ivory);
+    font-size: 14px;
+    text-align: center;
+    border-bottom: 1px solid rgba(212,168,75,.15);
+  }
+  tr:last-child td { border-bottom: none; }
+  
+  /* 表格最后一行（合计）特别样式 */
+  tr.total-row td {
+    background: rgba(212,168,75,.08);
+    color: var(--gold-bright);
+    font-weight: 600;
+    border-top: 1px solid var(--gold);
+  }
+  
+  /* 不同牌的颜色标识（红/橙/蓝/绿，方便视觉区分） */
+  td.deck-a { color: #ff8b8b; }
+  td.deck-b { color: #ffc97b; }
+  td.deck-c { color: #9bd4ff; }
+  td.deck-d { color: #a8f0c8; }
+  td.positive { color: var(--emerald); font-weight: 600; }
+  td.negative { color: var(--blood); font-weight: 600; }
+
+  /* 详情表格使用可滚动容器（避免 100 行撑爆页面） */
+  .detail-scroll {
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid var(--gold);
+    background: linear-gradient(180deg, rgba(42,10,11,.7), rgba(20,5,5,.8));
+  }
+  .detail-scroll table { border: none; }
+  /* 表头固定：滚动时表头始终可见 */
+  .detail-scroll thead th { position: sticky; top: 0; z-index: 2; }
+  /* 自定义滚动条样式（仅 Webkit 浏览器） */
+  .detail-scroll::-webkit-scrollbar { width: 10px; }
+  .detail-scroll::-webkit-scrollbar-track { background: var(--wine-deep); }
+  .detail-scroll::-webkit-scrollbar-thumb { background: var(--gold-soft); border-radius: 2px; }
+
+  .action-row {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    margin-top: 40px;
+    flex-wrap: wrap;
+  }
+
+  /* 条形图可视化：直观对比 4 副牌在两个 Block 的选择数 */
+  .bar-viz {
+    display: grid;
+    grid-template-columns: 80px 1fr 60px 60px 80px;
+    gap: 16px;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(212,168,75,.15);
+  }
+  .bar-viz:last-child { border-bottom: none; }
+  .bar-viz .deck-tag {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: .1em;
+  }
+  .bar-track {
+    height: 18px;
+    background: rgba(0,0,0,.4);
+    border: 1px solid rgba(212,168,75,.3);
+    position: relative;
+    overflow: hidden;
+  }
+  /* Block 1 的条形：金色 */
+  .bar-fill-b1 {
+    position: absolute; left: 0; top: 0; height: 100%;
+    background: linear-gradient(90deg, var(--gold-soft), var(--gold-bright));
+    transition: width 1s ease;
+  }
+  /* Block 2 的条形：红色（与 Block 1 分别占左右半边） */
+  .bar-fill-b2 {
+    position: absolute; top: 0; height: 100%;
+    background: linear-gradient(90deg, var(--blood), #ff6b6b);
+    opacity: .7;
+    transition: width 1s ease .4s;    /* 延迟 0.4 秒出现，产生递进动画 */
+  }
+
+  /* ============================================================
+     响应式：小屏幕（手机）适配
+     ============================================================ */
+  @media (max-width: 768px) {
+    .hud {
+      grid-template-columns: 1fr;     /* 改为单列布局 */
+      gap: 16px;
+      padding: 18px;
+    }
+    .hud-block { align-items: center !important; padding: 0 !important; }
+    .deck { width: 140px; height: 200px; }       /* 卡片缩小 */
+    .deck-emblem { font-size: 56px; }
+    .deck-row { gap: 20px; }
+    .balance-neon { font-size: 42px; }
+    .final-balance-value { font-size: 56px; }
+    .final-balance-card { padding: 30px 40px; }
+    .welcome-frame { padding: 40px 24px; }
+    h1.title { font-size: 42px; }
+  }
+
+  /* 详情表中牌的标签（彩色带框） */
+  .dtag { 
+    display: inline-block; 
+    padding: 2px 10px; 
+    border: 1px solid; 
+    border-radius: 2px;
+    font-weight: 600; 
+    letter-spacing: .2em;
+  }
+  .dtag-A { color: #ff8b8b; border-color: #ff8b8b; }
+  .dtag-B { color: #ffc97b; border-color: #ffc97b; }
+  .dtag-C { color: #9bd4ff; border-color: #9bd4ff; }
+  .dtag-D { color: #a8f0c8; border-color: #a8f0c8; }
+
+  /* 右下角提示 (Toast) */
+  .toast {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%) translateY(120%);  /* 默认在屏幕外 */
+    background: var(--wine);
+    color: var(--cream);
+    padding: 14px 28px;
+    border: 1px solid var(--gold);
+    font-family: 'Cinzel', serif;
+    font-size: 12px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    transition: transform .4s ease;
+    z-index: 200;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }  /* 滑入 */
+
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     HTML 结构部分
+     
+     4 个场景的父结构都是 <section class="stage" id="xxx">
+     JS 通过切换 .active class 来决定显示哪个场景
+     ============================================================ -->
+
+
+<!-- ============================================================
+     场景 1：欢迎/说明页
+     ============================================================ -->
+<section id="welcome" class="stage active">  <!-- 默认激活，首屏显示 -->
+  <div class="welcome-frame">
+    <div style="text-align:center;">
+      <div class="ornament">Iowa Gambling Task</div>
+      <h1 class="title">The Iowa Table</h1>
+      <div class="subtitle">— 命运之牌 · Quatre Jeux de Cartes —</div>
+    </div>
+
+    <!-- 实验说明（不透露任何牌堆规律，以免影响实验结果） -->
+    <div class="instructions">
+      <p>先生／女士，欢迎光临 <strong>Iowa Table</strong>。</p>
+      <p>您面前有四副牌，分别标记为 <strong>A · B · C · D</strong>。每一次下注，请选择其中任意一副，翻开最上方的一张牌，您将立即知晓本轮的 <strong>盈利</strong>，以及可能伴随的 <strong>损失</strong>。</p>
+      <p>每副牌的收益与风险 <strong>并不相同</strong>，而且您并不会被告知它们的规律 —— 需要您在博弈过程中亲自体会、琢磨、取舍。</p>
+      <p>实验共分 <strong>两个阶段（Block）</strong>，每阶段 50 次选择，总计 <strong>100 次</strong>。起始筹码为 <strong>$2000</strong>，请尽量让最终账户越高越好。</p>
+      <p style="color:var(--gold-bright); font-style:italic;">— 愿好运常伴。</p>
+    </div>
+
+    <!-- 被试编号输入（用于数据导出时识别不同参与者） -->
+    <div class="id-input">
+      <label>被试编号</label>
+      <input id="pid" type="text" placeholder="P001" maxlength="20"/>
+    </div>
+
+    <div class="cta-row">
+      <button class="btn" id="startBtn">入座开局</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     场景 2：任务页（核心实验界面）
+     ============================================================ -->
+<section id="task" class="stage">
+  <!-- 顶部 HUD：实时显示试次/余额/上轮结果 -->
+  <div class="hud">
+    <div class="hud-block left">
+      <div class="hud-label">Trial ／ 轮次</div>
+      <div class="hud-value"><span id="trialNum">1</span> / <span id="trialTotal">100</span></div>
+      <div class="hud-label" style="margin-top:12px;">Block ／ 阶段</div>
+      <div class="hud-value"><span id="blockNum">1</span> / 2</div>
+    </div>
+    <div>
+      <div class="hud-label" style="text-align:center;">Current Balance</div>
+      <!-- 余额数字：霓虹效果，盈亏会闪动 -->
+      <div class="balance-neon" id="balance">$2,000</div>
+    </div>
+    <div class="hud-block right">
+      <div class="hud-label">Last Round</div>
+      <div class="hud-value" id="lastWin" style="color:var(--emerald);">—</div>
+      <div class="hud-label" style="margin-top:12px;">Penalty</div>
+      <div class="hud-value" id="lastLoss" style="color:var(--blood);">—</div>
+    </div>
+  </div>
+
+  <!-- 进度条：随 trial 增加逐步填充 -->
+  <div class="progress-belt">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <div class="table-heading">— 请选择一副牌，揭开您的命运 —</div>
+
+  <!-- 4 副牌的容器：由 JS 在运行时动态填充内容 -->
+  <div class="deck-row" id="deckRow">
+    <!-- 4 个 .deck-slot 将由 JS 插入 -->
+  </div>
+</section>
+
+<!-- ============================================================
+     翻牌揭晓遮罩：点击牌堆后弹出
+     ============================================================ -->
+<div class="reveal-overlay" id="revealOverlay">
+  <div class="revealed-card" id="revealedCard">
+    <!-- 扑克牌左上/右下的字母 -->
+    <div class="revealed-corner top" id="cornerTop">A</div>
+    <div class="revealed-center">
+      <!-- 盈利金额（始终显示） -->
+      <div class="revealed-win">Winning<span class="amount" id="winAmt">+$50</span></div>
+      <!-- 损失金额（仅当 loss>0 时显示，由 JS 控制） -->
+      <div class="revealed-loss" id="lossBlock" style="display:none;">Penalty<span class="amount" id="lossAmt">-$250</span></div>
+      <!-- 本轮净收益 -->
+      <div class="revealed-net" id="netTxt">Net: +$50</div>
+    </div>
+    <div class="revealed-corner bottom" id="cornerBot">A</div>
+    <div class="revealed-continue">▸ Click anywhere to continue ◂</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     场景 3：Block 1 和 Block 2 之间的中场页
+     ============================================================ -->
+<section id="break" class="stage">
+  <div class="break-frame">
+    <div class="ornament">Intermission</div>
+    <h1 class="title" style="font-size: 48px; margin-top: 16px;">阶段一 · 完成</h1>
+    <p style="font-family:'Cormorant Garamond', serif; font-style:italic; font-size:20px; color:var(--ivory); opacity:.8; margin-top:20px;">
+      小憩片刻，下半场即将开始。
+    </p>
+    <!-- 显示中场时的筹码数 -->
+    <div class="break-stat" id="breakBalance">$2,000</div>
+    <p style="font-family:'Cinzel', serif; font-size:11px; letter-spacing:.4em; color:var(--gold); text-transform:uppercase;">Current Chips on Table</p>
+    <div style="margin-top: 40px;">
+      <button class="btn" id="continueBtn">开启下半场</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     场景 4：实验结束结果页
+     ============================================================ -->
+<section id="results" class="stage">
+  <!-- 最终余额（醒目展示） -->
+  <div class="results-header">
+    <div class="ornament">Final Tally</div>
+    <h1 class="title" style="font-size: 56px;">实验结束</h1>
+    <div class="final-balance-card">
+      <div class="final-balance-label">Final Balance</div>
+      <div class="final-balance-value" id="finalBalance">$0</div>
+    </div>
+  </div>
+
+  <!-- 各副牌选择次数汇总表 -->
+  <div class="result-section">
+    <h2 class="section-title">各副牌选择数量 · By Block</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>牌 DECK</th>
+          <th>Block 1</th>
+          <th>Block 2</th>
+          <th>总计 TOTAL</th>
+          <th>累计净收益</th>
+        </tr>
+      </thead>
+      <tbody id="summaryTable"></tbody>  <!-- 由 JS 动态填充 -->
+    </table>
+  </div>
+
+  <!-- 条形图可视化：直观展示 4 副牌在两阶段的分布 -->
+  <div class="result-section">
+    <h2 class="section-title">选择分布 · Distribution</h2>
+    <div id="barViz" style="background:linear-gradient(180deg, rgba(42,10,11,.7), rgba(20,5,5,.8)); border:1px solid var(--gold); padding:10px 0;"></div>
+    <div style="margin-top:12px; text-align:right; font-size:12px; color:var(--ivory); opacity:.7; font-family:'Cinzel',serif; letter-spacing:.2em;">
+      <span style="display:inline-block;width:12px;height:12px;background:var(--gold-bright);vertical-align:middle;margin-right:6px;"></span>Block 1
+      &nbsp;&nbsp;
+      <span style="display:inline-block;width:12px;height:12px;background:var(--blood);opacity:.7;vertical-align:middle;margin-right:6px;"></span>Block 2
+    </div>
+  </div>
+
+  <!-- 每一轮详细选择日志（可滚动表格） -->
+  <div class="result-section">
+    <h2 class="section-title">每轮选择详情 · Trial-by-Trial Log</h2>
+    <div class="detail-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>阶段</th>
+            <th>选择</th>
+            <th>盈利</th>
+            <th>损失</th>
+            <th>本轮净值</th>
+            <th>累计余额</th>
+          </tr>
+        </thead>
+        <tbody id="detailTable"></tbody>  <!-- 由 JS 动态填充 -->
+      </table>
+    </div>
+  </div>
+
+  <!-- 导出和重玩按钮 -->
+  <div class="action-row">
+    <button class="btn" id="exportBtn">导出 CSV 数据</button>
+    <button class="btn secondary" id="restartBtn">再玩一局</button>
+  </div>
+</section>
+
+<!-- 全局 Toast 提示（右下角，用于"数据已导出"等信息） -->
+<!-- <div class="toast" id="toast">DATA EXPORTED</div> -->
+
+<script>
+/* ============================================================
+   爱荷华赌博任务核心逻辑
+   
+   【程序流程】
+   1. newState()            —— 初始化实验状态
+   2. 生成 4 副牌（buildDeckA/B/C/D）
+   3. 用户点击开始 → 进入任务页
+   4. 每点一副牌 → handleDeckClick() 抽牌 → revealCard() 翻牌动画
+      → afterReveal() 更新 UI、检查是否需要换阶段或结束
+   5. 全部完成 → showResults() 生成所有统计表
+   6. exportCSV() 导出数据
+   ============================================================ */
+
+/* ============================================================
+   实验参数（集中常量，方便修改）
+   ============================================================ */
+const TOTAL_TRIALS = 100;         // 总试次数
+const TRIALS_PER_BLOCK = 50;      // 每个 Block 的试次数
+const START_BALANCE = 2000;       // 起始筹码
+
+/* ============================================================
+   工具函数：数组洗牌 (Fisher-Yates 洗牌算法)
+   从后往前遍历，每个位置随机和前面的某个位置交换
+   ============================================================ */
+function shuffle(arr){
+  const a = [...arr];               // 复制一份，不修改原数组
+  for (let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));  // 0 到 i 之间的随机下标
+    [a[i], a[j]] = [a[j], a[i]];    // ES6 解构互换
+  }
+  return a;
+}
+
+/* ============================================================
+   牌堆生成函数
+   
+   每副牌 60 张 = 6 个"10 张为单位"的小组
+   每组的损失位置都随机打乱，但组内损失的总金额是固定的
+   这样能保证任何连续 10 张的净收益都符合实验要求
+   ============================================================ */
+
+// 牌堆 A：盈利牌，10 张里只有 1 张大损失 (-$250)
+function buildDeckA(){
+  const cards = [];
+  for (let b = 0; b < 6; b++){      // 循环 6 次生成 60 张
+    // 随机选一个 0-9 的位置放损失牌
+    const lossIdx = Math.floor(Math.random() * 10);
+    for (let i = 0; i < 10; i++){
+      cards.push({
+        deck: 'A',
+        win: 50,                    // 每张都赢 $50
+        loss: i === lossIdx ? 250 : 0  // 只有一张有 $250 损失
+      });
+    }
+  }
+  return cards;  // 每 10 张净值 = 10*50 - 250 = +$250
+}
+
+// 牌堆 B：盈利牌，10 张里有 5 张小损失，损失总额与 A 相同
+function buildDeckB(){
+  const cards = [];
+  for (let b = 0; b < 6; b++){
+    // 5 个损失值，加起来 =  250（与 A 一致）
+    const lossVals = [25, 50, 50, 50, 75];
+    // 随机选 5 个位置放损失
+    const positions = shuffle([0,1,2,3,4,5,6,7,8,9]).slice(0, 5);
+    // 建立"位置 -> 损失值"映射
+    const map = {};
+    positions.forEach((p, i) => map[p] = lossVals[i]);
+    
+    for (let i = 0; i < 10; i++){
+      cards.push({
+        deck: 'B',
+        win: 50,
+        loss: map[i] || 0           // 若该位置有损失则取值，否则 0
+      });
+    }
+  }
+  return cards;  // 每 10 张净值 = 10*50 - 250 = +$250
+}
+
+// 牌堆 C：损失牌，10 张里有 1 张巨额损失 (-$1250)
+function buildDeckC(){
+  const cards = [];
+  for (let b = 0; b < 6; b++){
+    const lossIdx = Math.floor(Math.random() * 10);
+    for (let i = 0; i < 10; i++){
+      cards.push({
+        deck: 'C',
+        win: 100,                   // 每张赢 $100（比 A/B 高）
+        loss: i === lossIdx ? 1250 : 0
+      });
+    }
+  }
+  return cards;  // 每 10 张净值 = 10*100 - 1250 = -$250
+}
+
+// 牌堆 D：损失牌，10 张里有 5 张中等损失，总额与 C 相同
+function buildDeckD(){
+  const cards = [];
+  for (let b = 0; b < 6; b++){
+    // 5 个损失值加起来 = 1250
+    const lossVals = [150, 200, 250, 300, 350];
+    const positions = shuffle([0,1,2,3,4,5,6,7,8,9]).slice(0, 5);
+    const map = {};
+    positions.forEach((p, i) => map[p] = lossVals[i]);
+    
+    for (let i = 0; i < 10; i++){
+      cards.push({
+        deck: 'D',
+        win: 100,
+        loss: map[i] || 0
+      });
+    }
+  }
+  return cards;  // 每 10 张净值 = 10*100 - 1250 = -$250
+}
+
+/* ============================================================
+   实验状态（全局唯一对象）
+   所有实验过程中变化的数据都存在这里
+   ============================================================ */
+let state = null;
+
+// 初始化一份全新的状态
+function newState(){
+  return {
+    participantId: '',              // 被试编号
+    trial: 0,                       // 当前是第几次选牌
+    block: 1,                       // 当前处于哪个阶段
+    balance: START_BALANCE,         // 当前筹码余额
+    history: [],                    // 完整历史：每轮的 {trial, block, deck, win, loss, net, balance, timestamp}
+    decks: {                        // 预先生成好的 4 副牌
+      A: buildDeckA(),
+      B: buildDeckB(),
+      C: buildDeckC(),
+      D: buildDeckD(),
+    },
+    pointers: {A:0, B:0, C:0, D:0}, // 每副牌已抽到第几张（下次抽的下标）
+    startTime: Date.now(),          // 实验开始时间戳（算反应时用）
+  };
+}
+
+/* ============================================================
+   DOM 操作辅助函数
+   ============================================================ */
+
+// 快捷访问：$('id') 相当于 document.getElementById('id')
+const $ = id => document.getElementById(id);
+
+// 所有场景的 id 列表
+const stages = ['welcome', 'task', 'break', 'results'];
+
+// 切换到某个场景（切换 active class）
+function showStage(name){
+  stages.forEach(s => $(s).classList.toggle('active', s === name));
+  window.scrollTo({top: 0, behavior: 'smooth'});  // 滚到页面顶部
+}
+
+// 格式化金额：处理正负号和千分位逗号
+function formatMoney(n){
+  const sign = n < 0 ? '-' : '';
+  return sign + '$' + Math.abs(n).toLocaleString();  // toLocaleString 自动加逗号
+}
+
+// 带正负号的格式化（比如 +$250 / -$1250）
+function formatSigned(n){
+  if (n === 0) return '$0';
+  return (n > 0 ? '+' : '-') + '$' + Math.abs(n).toLocaleString();
+}
+
+/* ============================================================
+   渲染 4 副牌的 DOM 元素
+   用 JS 动态生成而非直接写在 HTML 里，方便后续扩展和维护
+   ============================================================ */
+function renderDecks(){
+  const row = $('deckRow');
+  row.innerHTML = '';  // 清空
+  ['A','B','C','D'].forEach(letter => {
+    const slot = document.createElement('div');
+    slot.className = 'deck-slot';
+    // 模板字符串：把 HTML 作为字符串直接插入
+    slot.innerHTML = `
+      <div class="deck" data-deck="${letter}">
+        <div class="card-face card-back">
+          <div class="deck-emblem">${letter}</div>
+        </div>
+      </div>
+      <div class="deck-label">Deck ${letter}</div>
+    `;
+    // 给这个 deck 绑定点击事件
+    slot.querySelector('.deck').addEventListener('click', () => handleDeckClick(letter));
+    row.appendChild(slot);
+  });
+}
+
+/* ============================================================
+   抽牌处理（核心逻辑）
+   ============================================================ */
+let isRevealing = false;  // 防重复点击：翻牌动画期间锁定
+
+function handleDeckClick(letter){
+  // 守卫条件：
+  if (isRevealing) return;                              // 正在揭晓
+  if (state.trial >= TOTAL_TRIALS) return;              // 实验已结束
+  if (state.pointers[letter] >= state.decks[letter].length){
+    showToast('此副牌已空');                             // 理论上不会发生（60 > 50）
+    return;
+  }
+
+  isRevealing = true;
+  
+  // 1. 从牌堆顶取出一张
+  const card = state.decks[letter][state.pointers[letter]];
+  state.pointers[letter]++;                             // 指针向后移
+  state.trial++;                                        // 试次 +1
+  
+  // 2. 计算净收益并更新余额
+  const net = card.win - card.loss;
+  state.balance += net;
+  
+  // 3. 记录到历史（用于后续的结果页和 CSV 导出）
+  state.history.push({
+    trial: state.trial,
+    block: state.block,
+    deck: letter,
+    win: card.win,
+    loss: card.loss,
+    net: net,
+    balance: state.balance,
+    timestamp: Date.now() - state.startTime  // 距离实验开始的毫秒数
+  });
+
+  // 4. 禁用点击的那副牌（防止连点）
+  const deckEl = document.querySelector(`.deck[data-deck="${letter}"]`);
+  deckEl.classList.add('disabled');
+
+  // 5. 稍延迟显示翻牌动画（让用户看清点击反馈）
+  setTimeout(() => {
+    revealCard(letter, card, net);
+  }, 100);
+}
+
+/* ============================================================
+   翻牌揭晓动画：全屏遮罩展示被抽到的牌
+   ============================================================ */
+function revealCard(letter, card, net){
+  // 更新卡面内容
+  $('cornerTop').textContent = letter;
+  $('cornerBot').textContent = letter;
+  $('winAmt').textContent = '+' + formatMoney(card.win);
+
+  // 损失仅在有损失时显示
+  if (card.loss > 0){
+    $('lossBlock').style.display = 'block';
+    $('lossAmt').textContent = '-' + formatMoney(card.loss);
+  } else {
+    $('lossBlock').style.display = 'none';
+  }
+  $('netTxt').textContent = 'NET: ' + formatSigned(net);
+
+  // 显示遮罩（触发 CSS 动画 cardPop）
+  $('revealOverlay').classList.add('show');
+  
+  // 绑定"点击任意位置继续"
+  const handler = () => {
+    $('revealOverlay').removeEventListener('click', handler);  // 用完即删，防止重复绑定
+    $('revealOverlay').classList.remove('show');
+    afterReveal(card, net);
+  };
+  // 延迟 600ms 后才允许点击（动画时长），防止用户过快点掉
+  setTimeout(() => $('revealOverlay').addEventListener('click', handler), 600);
+}
+
+/* ============================================================
+   揭晓后：更新界面 + 检查是否进入中场/结果
+   ============================================================ */
+function afterReveal(card, net){
+  // 1. 更新 HUD 余额（带闪光动画）
+  $('balance').textContent = formatMoney(state.balance);
+  $('balance').classList.remove('flash', 'flash-loss');
+  void $('balance').offsetWidth;   // 强制回流，重置 CSS 动画（必须这步才能再次触发）
+  if (net >= 0) $('balance').classList.add('flash');       // 盈利：金光
+  else $('balance').classList.add('flash-loss');            // 损失：红光
+
+  // 2. 更新"上轮结果"区
+  $('lastWin').textContent = '+' + formatMoney(card.win);
+  $('lastLoss').textContent = card.loss > 0 ? '-' + formatMoney(card.loss) : '—';
+
+  // 3. 更新进度条和试次显示
+  $('trialNum').textContent = state.trial;
+  $('trialTotal').textContent = TOTAL_TRIALS;
+  $('progressFill').style.width = (state.trial / TOTAL_TRIALS * 100) + '%';
+
+  // 4. 解锁所有牌堆（可以再次点击）
+  document.querySelectorAll('.deck').forEach(d => d.classList.remove('disabled'));
+  isRevealing = false;
+
+  // 5. 检查是否切换到中场页或结果页
+  if (state.trial === TRIALS_PER_BLOCK && state.block === 1){
+    // Block 1 结束：进入中场
+    setTimeout(() => {
+      $('breakBalance').textContent = formatMoney(state.balance);
+      showStage('break');
+    }, 350);
+  } else if (state.trial === TOTAL_TRIALS){
+    // 全部完成：进入结果页
+    setTimeout(() => showResults(), 350);
+  }
+}
+
+/* ============================================================
+   生成结果页的所有统计
+   ============================================================ */
+function showResults(){
+  // 1. 最终余额
+  $('finalBalance').textContent = formatMoney(state.balance);
+
+  // 2. 初始化统计容器：每副牌的 {block1 次数、block2 次数、累计净值}
+  const decks = ['A','B','C','D'];
+  const counts = {};    // { A: {1: x, 2: y}, B: ..., ... }
+  const nets = {};      // { A: xxx, B: xxx, ... }
+  decks.forEach(d => {
+    counts[d] = {1: 0, 2: 0};
+    nets[d] = 0;
+  });
+  
+  // 3. 遍历历史，累计统计
+  state.history.forEach(h => {
+    counts[h.deck][h.block]++;
+    nets[h.deck] += h.net;
+  });
+
+  // 4. 生成汇总表格的 HTML
+  let html = '';
+  decks.forEach(d => {
+    const b1 = counts[d][1];
+    const b2 = counts[d][2];
+    const tot = b1 + b2;
+    const net = nets[d];
+    const netCls = net > 0 ? 'positive' : net < 0 ? 'negative' : '';
+    html += `<tr>
+      <td><span class="dtag dtag-${d}">${d}</span></td>
+      <td>${b1}</td>
+      <td>${b2}</td>
+      <td>${tot}</td>
+      <td class="${netCls}">${formatSigned(net)}</td>
+    </tr>`;
+  });
+  
+  // 5. 合计行
+  const totB1 = decks.reduce((s, d) => s + counts[d][1], 0);
+  const totB2 = decks.reduce((s, d) => s + counts[d][2], 0);
+  const totAll = totB1 + totB2;
+  const totNet = decks.reduce((s, d) => s + nets[d], 0);
+  html += `<tr class="total-row">
+    <td>Σ 总计</td><td>${totB1}</td><td>${totB2}</td><td>${totAll}</td>
+    <td>${formatSigned(totNet)}</td></tr>`;
+  $('summaryTable').innerHTML = html;
+
+  // 6. 生成条形图可视化
+  // 找到各副牌中最大选择次数，用于按比例缩放条形宽度
+  const maxCount = Math.max(...decks.map(d => Math.max(counts[d][1], counts[d][2])), 1);
+  let barHtml = '';
+  decks.forEach(d => {
+    const b1pct = (counts[d][1] / maxCount) * 100;
+    const b2pct = (counts[d][2] / maxCount) * 100;
+    // 左半 = Block 1 (金色)，右半 = Block 2 (红色)
+    barHtml += `
+      <div class="bar-viz">
+        <div class="deck-tag dtag-${d}" style="border:none;">Deck ${d}</div>
+        <div class="bar-track">
+          <div class="bar-fill-b1" style="width:${b1pct/2}%;"></div>
+          <div class="bar-fill-b2" style="width:${b2pct/2}%; left:50%;"></div>
+        </div>
+        <div style="color:var(--gold-bright); font-family:'DM Mono', monospace;">${counts[d][1]}</div>
+        <div style="color:#ff9898; font-family:'DM Mono', monospace;">${counts[d][2]}</div>
+        <div style="color:var(--ivory); font-family:'DM Mono', monospace; text-align:right;">Σ ${counts[d][1]+counts[d][2]}</div>
+      </div>`;
+  });
+  $('barViz').innerHTML = barHtml;
+
+  // 7. 生成详情表（每一轮的完整信息）
+  let dh = '';
+  state.history.forEach(h => {
+    const netCls = h.net > 0 ? 'positive' : h.net < 0 ? 'negative' : '';
+    dh += `<tr>
+      <td>${h.trial}</td>
+      <td>Block ${h.block}</td>
+      <td><span class="dtag dtag-${h.deck}">${h.deck}</span></td>
+      <td style="color:var(--emerald);">+${formatMoney(h.win)}</td>
+      <td style="color:${h.loss>0?'var(--blood)':'var(--ivory)'};">${h.loss>0 ? '-'+formatMoney(h.loss) : '—'}</td>
+      <td class="${netCls}">${formatSigned(h.net)}</td>
+      <td>${formatMoney(h.balance)}</td>
+    </tr>`;
+  });
+  $('detailTable').innerHTML = dh;
+
+  showStage('results');  // 切换到结果页
+}
+
+/* ============================================================
+   导出 CSV 数据（可以用 Excel/SPSS/R/Python 打开分析）
+   ============================================================ */
+function exportCSV(){
+  const rows = [];
+  
+  // 1. 主表：每一轮的完整数据
+  rows.push(['participant_id','trial','block','deck','win','loss','net','balance_after','rt_ms_since_start']);
+  state.history.forEach(h => {
+    rows.push([state.participantId, h.trial, h.block, h.deck, h.win, h.loss, h.net, h.balance, h.timestamp]);
+  });
+  
+  // 2. 空行 + 汇总表
+  rows.push([]);
+  rows.push(['# SUMMARY']);
+  rows.push(['deck','block1_count','block2_count','total_count','total_net']);
+  const decks = ['A','B','C','D'];
+  const counts = {}; const nets = {};
+  decks.forEach(d => { counts[d]={1:0,2:0}; nets[d]=0; });
+  state.history.forEach(h => { counts[h.deck][h.block]++; nets[h.deck]+=h.net; });
+  decks.forEach(d => {
+    rows.push([d, counts[d][1], counts[d][2], counts[d][1]+counts[d][2], nets[d]]);
+  });
+  
+  // 3. 总体结果
+  rows.push([]);
+  rows.push(['final_balance', state.balance]);
+  rows.push(['starting_balance', START_BALANCE]);
+  rows.push(['total_net_change', state.balance - START_BALANCE]);
+
+  // 4. 把二维数组转成 CSV 文本
+  //    如果单元格含逗号/双引号/换行，需要用双引号包裹并把内部双引号转义
+  const csv = rows.map(r => r.map(c => {
+    const s = String(c);
+    return /[,"\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  }).join(',')).join('\n');
+
+  // 5. 创建 Blob 对象（带 BOM '\ufeff'，确保 Excel 正确识别中文）
+  const blob = new Blob(['\ufeff' + csv], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);   // 生成临时下载链接
+  
+  // 6. 创建隐藏的 <a> 点击触发下载
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  a.href = url;
+  a.download = `IGT_${state.participantId || 'anon'}_${dateStr}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);                // 释放内存
+  
+  showToast('已导出 CSV 数据');
+}
+
+/* ============================================================
+   Toast 提示显示（右下角滑入 2.2 秒后消失）
+   ============================================================ */
+function showToast(msg){
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* ============================================================
+   绑定页面按钮事件
+   ============================================================ */
+
+// 【开始实验】按钮
+$('startBtn').addEventListener('click', () => {
+  state = newState();                                     // 创建新状态（重新洗牌）
+  state.participantId = ($('pid').value || '').trim() || 'anon';
+  renderDecks();                                          // 生成 4 副牌的 DOM
+  // 重置 HUD 显示
+  $('balance').textContent = formatMoney(state.balance);
+  $('trialNum').textContent = 0;
+  $('trialTotal').textContent = TOTAL_TRIALS;
+  $('blockNum').textContent = 1;
+  $('progressFill').style.width = '0%';
+  $('lastWin').textContent = '—';
+  $('lastLoss').textContent = '—';
+  showStage('task');                                      // 进入任务页
+});
+
+// 【继续到 Block 2】按钮
+$('continueBtn').addEventListener('click', () => {
+  state.block = 2;
+  $('blockNum').textContent = 2;
+  showStage('task');
+});
+
+// 【导出 CSV】按钮
+$('exportBtn').addEventListener('click', exportCSV);
+
+// 【再玩一局】按钮
+$('restartBtn').addEventListener('click', () => {
+  state = null;
+  $('pid').value = '';
+  showStage('welcome');
+});
+
+/* ============================================================
+   键盘快捷键支持
+   1/2/3/4 或 A/B/C/D 键 = 选择对应牌堆
+   翻牌状态下按任意键 = 关闭翻牌遮罩
+   ============================================================ */
+document.addEventListener('keydown', (e) => {
+  if (!$('task').classList.contains('active')) return;  // 非任务页不响应
+
+  // 如果正在翻牌，按任意键关闭
+  if ($('revealOverlay').classList.contains('show')) {
+    $('revealOverlay').click();
+    return;
+  }
+
+  // 按键到牌堆的映射
+  const map = {'1':'A','2':'B','3':'C','4':'D','a':'A','b':'B','c':'C','d':'D','A':'A','B':'B','C':'C','D':'D'};
+  if (map[e.key]) {
+    handleDeckClick(map[e.key]);
+  }
+});
+
+</script>
+</body>
+</html>
